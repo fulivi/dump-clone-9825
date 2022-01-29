@@ -1,0 +1,541 @@
+                                                PAGE 1
+MODULE:  Clon25
+
+110                ! **** CLONE9825 ****
+120                ! Copyright (c) 2022 F.Ulivi
+130                !
+140                ! Licensed under the 3-Clause BSD License
+150                !
+160                ! Any resemblance to test ROM code is purely coincidental ;)
+170                !
+180                         EXT Isr_access,Get_value,Get_info,Put_value
+190                !
+200                ! Bits in option bitmap
+210         000001 Opt_track_b:EQU 1
+220                !
+230                ! Operation codes
+240         000000 Op_terminate:EQU 0
+250         000001 Op_wr_words:EQU 1
+260         000002 Op_wr_gap:EQU 2
+270         000003 Op_wr_repeat:EQU 3
+280                !
+290                ! Error codes
+300         000000 Err_none:EQU 0           ! No error
+310         000001 Err_normal:EQU 1         ! Normal end
+320         000002 Err_underf:EQU 2         ! Exchange buffer underflow
+330         000003 Err_prem_end:EQU 3       ! Premature end of data
+340         000004 Err_no_space:EQU 4       ! No more space on tape
+350         000005 Err_taco:EQU 5           ! TACO error
+360         000006 Err_par: EQU 6           ! Bad parameters
+370         000007 Err_no_isr:EQU 7         ! Couldn't acquire ISR
+380                !
+390                ! Offset for indirect jumps @ISR level
+400         100000 Indirect_off:EQU 100000B
+410                !
+420                ! TACO Commands
+430         010000 Taco_stop:EQU 10000B
+440         014000 Taco_set_track:EQU 14000B
+450         000100 Taco_mod:EQU 100B
+460         000100 Taco_track_b:EQU Taco_mod
+470         034000 Taco_clear:EQU 34000B
+480         100000 Taco_forward:EQU 100000B
+490         107000 Taco_wr_9825:EQU 7000B+Taco_forward
+500         154000 Taco_wr_gap:EQU 54000B+Taco_forward
+510         015000 Taco_force_irq:EQU 15000B
+520                !
+530                ! Precompensation
+540         060000 Taco_precomp:EQU 60000B
+550                !
+560                ! T15 PA
+570         000017 T15:     EQU 15
+580                !
+590         000034 R34:     EQU 34B
+600         000035 R35:     EQU 35B
+610   00041        Save_r35:BSS 1
+620   00042        Isr_jump:BSS 1
+630   00043        Err_code:BSS 1
+640                !
+650                ! ************
+660                ! * TACO ISR *
+670                ! ************
+680   00044 000035 Clone_isr:LDA R35
+690   00045 033774          STA Save_r35
+700   00046 000034          LDA R34
+
+
+
+                                                PAGE 2
+MODULE:  Clon25
+
+710   00047 030035          STA R35
+720   00050 003773          LDA Err_code
+730   00051 072020          RZA Err_n_end   ! Abort if errors
+740                !
+750                ! Check TACO state
+760   00052 000005          LDA R5
+770   00053 052454          AND =15
+780   00054 072406          SZA Check2
+790   00055 073003          SLA Check1
+800   00056 002452          LDA =Err_no_space       ! Met hole: no more space on
+ tape
+810   00057 066012          JMP Err_n_end
+820   00060 002451 Check1:  LDA =Err_taco   ! TACO error: no cartridge, write pr
+otection or servo failure
+830   00061 066010          JMP Err_n_end
+840   00062 167760 Check2:  JMP Isr_jump,I  ! TACO ok, jump to current state
+850                !
+860   00063 042017 Cmd_n_set_int:JSM Wait_flg
+870   00064 030005          STA R5
+880   00065 037755          STB Isr_jump
+890   00066 003753 Leave_isr:LDA Save_r35
+900   00067 030035          STA R35
+910   00070 170201          RET 1
+920                !
+930   00071 033752 Err_n_end:STA Err_code
+940   00072 042016          JSM Clear_taco
+950   00073 002437          LDA =Taco_stop
+960   00074 042015          JSM Cmd_taco
+970   00075 003744          LDA Save_r35
+980   00076 030035          STA R35
+990   00077 141514          JSM End_isr_high,I
+1000  00100 170201           RET 1
+1010               !
+1020  00101        Tmp1:     BSS 1
+1030               !
+1040  00102 033777 Wait_flg: STA Tmp1
+1050  00103 002430           LDA =65511
+1060  00104 072202 Wait1:    SFS Wait2
+1070  00105 072177           RIA Wait1
+1080  00106 003773 Wait2:    LDA Tmp1
+1090  00107 170201           RET 1
+1100               !
+1110  00110 002424 Clear_taco:LDA =Taco_clear
+1120  00111 043771 Cmd_taco: JSM Wait_flg
+1130  00112 030005           STA R5
+1140  00113 170201           RET 1
+1150               !
+1160               ! Get op/word into exchange buffer
+1170               ! RET 1: underflow
+1180               ! RET 2: OK
+1190  00114        Exch_op:  BSS 1
+1200  00115        Exch_word:BSS 1
+1210  00116        Exch_flag:BSS 1
+1220  00117        Curr_op:  BSS 1
+1230  00120        Curr_word:BSS 1
+1240               !
+1250  00121 003775 Get_exchange:LDA Exch_flag
+1260  00122 073206           SLA Get_ex1,C
+1270  00123 033773           STA Exch_flag
+1280  00124 003771           LDA Exch_word
+
+
+
+                                                PAGE 3
+MODULE:  Clon25
+
+1290  00125 033773           STA Curr_word   ! Xfer word
+1300  00126 003766           LDA Exch_op     ! Get new op
+1310  00127 170202           RET 2
+1320  00130 002405 Get_ex1:  LDA =Err_underf ! Underflow
+1330  00131 170201           RET 1
+1340               !
+1350  00132 043767 State_start:JSM Get_exchange
+1360  00133 067736           JMP Err_n_end
+1370               !
+1380               ! Start a new op (code in A)
+1390  00134 033763 Start_op: STA Curr_op
+1400  00135 022401           ADA =Jump_tb+Indirect_off
+1410  00136 164000           JMP A,I
+1420  00137 066003 Jump_tb:  JMP Start_op0
+1430  00140 066004           JMP Start_op1
+1440  00141 066015           JMP Start_op2
+1450               ! Op=0: terminate
+1460  00142 002375 Start_op0:LDA =Err_normal
+1470  00143 067726           JMP Err_n_end
+1480               ! Op=1: write words
+1490  00144 002304 Start_op1:LDA Val_threshold
+1500  00145 022373           ADA =Taco_precomp
+1510  00146 043734           JSM Wait_flg
+1520  00147 030007           STA R7          ! Write timing & precompensation
+1530  00150 003750           LDA Curr_word   ! First word
+1540  00151 043731           JSM Wait_flg
+1550  00152 030004           STA R4
+1560  00153 002366           LDA =Taco_wr_9825
+1570  00154 006366           LDB =State_wr_words+Indirect_off
+1580  00155 067706           JMP Cmd_n_set_int
+1590               ! Op=2: write gap
+1600  00156 003742 Start_op2:LDA Curr_word
+1610  00157 170040           TCA 
+1620  00160 043722           JSM Wait_flg
+1630  00161 030006           STA R6          ! Load length of gap from Curr_word
+1640  00162 002361           LDA =Taco_wr_gap
+1650  00163 006361           LDB =State_wr_gap+Indirect_off
+1660  00164 067677           JMP Cmd_n_set_int
+1670               !
+1680               ! State_wr_words: write words
+1690  00165 043734 State_wr_words:JSM Get_exchange
+1700  00166 067703           JMP Err_n_end
+1710  00167 013730           CPA Curr_op
+1720  00170 066002           JMP State_ww_1
+1730  00171 067743           JMP Start_op
+1740  00172 003726 State_ww_1:LDA Curr_word
+1750  00173 043707           JSM Wait_flg
+1760  00174 030004           STA R4
+1770  00175 067671           JMP Leave_isr
+1780               !
+1790               ! State_wr_gap: write gap
+1800  00176 043723 State_wr_gap:JSM Get_exchange
+1810  00177 067672           JMP Err_n_end
+1820  00200 067734           JMP Start_op
+1830               !
+1840               ! Start writing
+1850               ! RET 1: failure
+1860               ! RET 2: OK
+1870  00201 002344 Start_wr: LDA =State_start+Indirect_off
+1880  00202 033640           STA Isr_jump
+
+
+
+                                                PAGE 4
+MODULE:  Clon25
+
+1890  00203 000011           LDA Pa
+1900  00204 052323           AND =15
+1910  00205 022341           ADA =256+(3*16) ! 1 attempt, synch. access
+1920  00206 030001           STA B
+1930  00207 002340           LDA =Clone_isr
+1940  00210 142340           JSM Isr_access
+1950  00211 170201           RET 1           ! Failed
+1960  00212 043676           JSM Clear_taco
+1970  00213 002336           LDA =Taco_set_track
+1980  00214 006233           LDB Val_options
+1990  00215 077002           SLB Start1
+2000  00216 062334           IOR =Taco_track_b
+2010  00217 043672 Start1:   JSM Cmd_taco    ! Set track A/B
+2020  00220 002333           LDA =Taco_force_irq     ! Force IRQ to start FSM
+2030  00221 043670           JSM Cmd_taco    ! Off we go!
+2040  00222 170202           RET 2
+2050               !
+2060               ! ********************************
+2070               ! * ICALL Entry point: Clone9825 *
+2080               ! ********************************
+2090               !
+2100                         SUB 
+2110  00224        Par_options:INT           ! Option bitmap
+2120  00227        Par_threshold:INT         ! Threshold
+2130  00232        Par_data: STR (*)         ! Input data
+2140  00235        Par_error:INT             ! Out: error code
+2150               !
+2160  00240 002314 Clone9825:LDA =Val_options
+2170  00241 006314           LDB =Par_options
+2180  00242 142314           JSM Get_value
+2190  00243 002314           LDA =Val_threshold
+2200  00244 006314           LDB =Par_threshold
+2210  00245 142311           JSM Get_value
+2220  00246 002313           LDA =Data_info
+2230  00247 006313           LDB =Par_data
+2240  00250 142313           JSM Get_info
+2250  00251 002200           LDA Data_info
+2260  00252 012312           CPA =12         ! String array
+2270  00253 066002           JMP Clone1
+2280  00254 066055           JMP Bad_par
+2290  00255 002175 Clone1:   LDA Data_info+1
+2300  00256 012261           CPA =1
+2310  00257 066002           JMP Clone2
+2320  00260 066051           JMP Bad_par
+2330  00261 002172 Clone2:   LDA Dim_size
+2340  00262 073002           SLA Clone3      ! Dimensioned size must be even
+2350  00263 066046           JMP Bad_par
+2360  00264 170517 Clone3:   CLA 
+2370  00265 033556           STA Err_code
+2380  00266 002277           LDA =First_block
+2390  00267 042077           JSM New_el_block
+2400  00270 066042           JMP Exit_err
+2410  00271 042132           JSM Get_op      ! Get 1st op
+2420  00272 066033           JMP Prem_end
+2430  00273 002230           LDA Data_word   ! Prepare 1st op & word for ISR
+2440  00274 033621           STA Exch_word
+2450  00275 002230           LDA Op_to_exch
+2460  00276 033616           STA Exch_op
+2470  00277 002240           LDA =1
+2480  00300 033616           STA Exch_flag
+
+
+
+                                                PAGE 5
+MODULE:  Clon25
+
+2490  00301 002226           LDA =T15
+2500  00302 030011           STA Pa
+2510  00303 043676           JSM Start_wr
+2520  00304 066023           JMP No_isr
+2530               ! Main loop
+2540  00305 070430 Clone4:   DIR 
+2550  00306 003610           LDA Exch_flag
+2560  00307 073712           RLA Clone5,S
+2570  00310 033606           STA Exch_flag
+2580  00311 002212           LDA Data_word
+2590  00312 033603           STA Exch_word
+2600  00313 002212           LDA Op_to_exch
+2610  00314 033600           STA Exch_op
+2620  00315 070420           EIR 
+2630  00316 042072           JSM Advance_op
+2640  00317 066013           JMP Exit_err
+2650  00320 067765           JMP Clone4
+2660  00321 003522 Clone5:   LDA Err_code
+2670  00322 070420           EIR 
+2680  00323 072462           SZA Clone4
+2690  00324 066006           JMP Exit_err
+2700  00325 002241 Prem_end: LDA =Err_prem_end
+2710  00326 066004           JMP Exit_err
+2720  00327 002240 No_isr:   LDA =Err_no_isr
+2730  00330 066002           JMP Exit_err
+2740  00331 002237 Bad_par:  LDA =Err_par
+2750  00332 033511 Exit_err: STA Err_code
+2760  00333 002236           LDA =Err_code
+2770  00334 006236           LDB =Par_error
+2780  00335 142236           JSM Put_value
+2790  00336 170201           RET 1
+2800               !
+2810               ! Get a word from data array
+2820               ! RET 1: no more words
+2830               ! RET 2: OK
+2840  00337 000016 Get_data: LDA C
+2850  00340 012161           CPA El_end
+2860  00341 066004           JMP Get1                ! Array element exhausted
+2870  00342 070560 Get3:     WWC A,I                 ! Get word & adv pointer
+2880  00343 032160           STA Data_word
+2890  00344 170202           RET 2
+2900  00345 056107 Get1:     DSZ El_count
+2910  00346 066004           JMP Get4
+2920  00347 002217 Get2:     LDA =Err_prem_end       ! All elements read
+2930  00350 033473           STA Err_code
+2940  00351 170201           RET 1
+2950  00352 002150 Get4:     LDA Last_el
+2960  00353 072074           RZA Get2                ! Last element consumed
+2970  00354 146144           ISZ Curr_ptr_block,I
+2980  00355 066006           JMP Get5
+2990  00356 002142           LDA Curr_ptr_block      ! Move to next block of ele
+ments
+3000  00357 022207           ADA =3
+3010  00360 042006           JSM New_el_block
+3020  00361 170201           RET 1
+3030  00362 067760           JMP Get3
+3040  00363 042012 Get5:     JSM New_el
+3050  00364 170201           RET 1
+3060  00365 067755           JMP Get3
+3070               !
+
+
+
+                                                PAGE 6
+MODULE:  Clon25
+
+3080               ! Prepare for a new element block
+3090               ! A=ptr to pointer block
+3100               ! RET 1: Error
+3110               ! RET 2: OK
+3120  00366 032132 New_el_block:STA Curr_ptr_block
+3130  00367 022150           ADA =1
+3140  00370 104000           LDB A,I
+3150  00371 034016           STB C                   ! Set starting address of n
+ew el
+3160  00372 022145           ADA =1
+3170  00373 100000           LDA A,I
+3180  00374 030035           STA R35                 ! Set BSC of new el
+3190  00375 070560 New_el:   WWC A,I                 ! Get el length and move to
+ 1st word
+3200  00376 072451           SZA Get2                ! 0-sized el
+3210  00377 073450           RLA Get2                ! Element with odd size
+3220  00400 006137           LDB =1
+3230  00401 012052           CPA Dim_size
+3240  00402 006172           LDB =0
+3250  00403 036117           STB Last_el             ! Last el if length < dimen
+sioned size
+3260  00404 170500           SAR 1
+3270  00405 020016           ADA C
+3280  00406 032113           STA El_end              ! Compute end of new el
+3290  00407 170202           RET 2
+3300               !
+3310               ! Advance current op
+3320  00410 002114 Advance_op:LDA Op_curr
+3330  00411 022164           ADA =Op_adv_table
+3340  00412 164000           JMP A,I
+3350  00413 170202 Op_adv_table:RET 2                ! Op_terminate doesn't adva
+nce
+3360  00414 066005           JMP Adv_op_ww
+3370  00415 066006           JMP Get_op              ! Op_wr_gap: move to next o
+p
+3380  00416 056110           DSZ Op_cnt              ! Op_wr_repeat
+3390  00417 170202           RET 2                   ! Keep repeating word in Da
+ta_word
+3400  00420 066003           JMP Get_op              ! No more repetitions
+3410  00421 056105 Adv_op_ww:DSZ Op_cnt              ! Op_wr_words
+3420  00422 067715           JMP Get_data            ! Get next word
+3430               !
+3440               ! Get a new op
+3450  00423 043714 Get_op:   JSM Get_data
+3460  00424 170201           RET 1
+3470  00425 030001           STA B
+3480  00426 052150           AND =37777B
+3490  00427 032077           STA Op_cnt
+3500  00430 000001           LDA B
+3510  00431 170515           SAR 14
+3520  00432 032072           STA Op_curr
+3530  00433 032072           STA Op_to_exch
+3540  00434 022143           ADA =Op_table
+3550  00435 164000           JMP A,I
+3560  00436 170202 Op_table: RET 2                   ! Op_terminate
+3570  00437 067700           JMP Get_data            ! Op_wr_words: get 1st word
+3580  00440 066004           JMP Get_op_wg           ! Op_wr_gap
+3590  00441 002076           LDA =Op_wr_words        ! Op_wr_repeat
+3600  00442 032063           STA Op_to_exch          ! Fake Op_wr_words for ISR
+3610  00443 067674           JMP Get_data            ! Get word to be repeated
+
+
+
+                                                PAGE 7
+MODULE:  Clon25
+
+3620  00444 002062 Get_op_wg:LDA Op_cnt
+3630  00445 032056           STA Data_word           ! Set gap size
+3640  00446 170202           RET 2
+3650               !
+3660  00447        Val_options:BSS 1
+3670  00450        Val_threshold:BSS 1
+3680  00451        Data_info:BSS 39
+3690        000453 Dim_size: EQU Data_info+2
+3700        000454 El_count: EQU Data_info+3
+3710        000473 First_block:EQU Data_info+18
+3720  00520        Curr_ptr_block:BSS 1
+3730  00521        El_end:   BSS 1
+3740  00522        Last_el:  BSS 1
+3750  00523        Data_word:BSS 1
+3760  00524        Op_curr:  BSS 1
+3770  00525        Op_to_exch:BSS 1
+3780  00526        Op_cnt:   BSS 1
+3790               !
+3800                         LIT 64
+3810               !
+3820                         END Clon25
+      00627
+
+CROSS REFERENCE LISTING
+
+Adv_op_ww       000421 R  -3410  3360
+Advance_op      000410 R  -3320  2630
+Bad_par         000331 R  -2740  2280  2320  2350
+Check1          000060 R   -820   790
+Check2          000062 R   -840   780
+Clear_taco      000110 R  -1110   940  1960
+Clone1          000255 R  -2290  2270
+Clone2          000261 R  -2330  2310
+Clone3          000264 R  -2360  2340
+Clone4          000305 R  -2540  2650  2680
+Clone5          000321 R  -2660  2560
+Clone9825       000240 R  -2160
+Clone_isr       000044 R   -680  1930
+Cmd_n_set_int   000063 R   -860  1580  1660
+Cmd_taco        000111 R  -1120   960  2010  2030
+Curr_op         000117 R  -1220  1390  1710
+Curr_ptr_block  000520 R  -3720  2970  2990  3120
+Curr_word       000120 R  -1230  1290  1530  1600  1740
+Data_info       000451 R  -3680  2220  2250  2290  3690  3700  3710
+Data_word       000523 R  -3750  2430  2580  2880  3630
+Dim_size        000453 R  -3690  2330  3230
+El_count        000454 R  -3700  2900
+El_end          000521 R  -3730  2850  3280
+Err_code        000043 R   -630   720   930  2370  2660  2750  2760  2930
+Err_n_end       000071 R   -930   730   810   830  1360  1470  1700  1810
+Err_no_isr      000007     -370  2720
+Err_no_space    000004     -340   800
+Err_none        000000     -300
+Err_normal      000001     -310  1460
+Err_par         000006     -360  2740
+Err_prem_end    000003     -330  2700  2920
+Err_taco        000005     -350   820
+Err_underf      000002     -320  1320
+Exch_flag       000116 R  -1210  1250  1270  2480  2550  2570
+Exch_op         000114 R  -1190  1300  2460  2610
+
+
+
+                                                PAGE 8
+MODULE:  Clon25
+
+Exch_word       000115 R  -1200  1280  2440  2590
+Exit_err        000332 R  -2750  2400  2640  2690  2710  2730
+First_block     000473 R  -3710  2380
+Get1            000345 R  -2900  2860
+Get2            000347 R  -2920  2960  3200  3210
+Get3            000342 R  -2870  3030  3060
+Get4            000352 R  -2950  2910
+Get5            000363 R  -3040  2980
+Get_data        000337 R  -2840  3420  3450  3570  3610
+Get_ex1         000130 R  -1320  1260
+Get_exchange    000121 R  -1250  1350  1690  1800
+Get_info           EXT     -180  2240
+Get_op          000423 R  -3450  2410  3370  3400
+Get_op_wg       000444 R  -3620  3580
+Get_value          EXT     -180  2180  2210
+Indirect_off    100000     -400  1400  1570  1650  1870
+Isr_access         EXT     -180  1940
+Isr_jump        000042 R   -620   840   880  1880
+Jump_tb         000137 R  -1420  1400
+Last_el         000522 R  -3740  2950  3250
+Leave_isr       000066 R   -890  1770
+New_el          000375 R  -3190  3040
+New_el_block    000366 R  -3120  2390  3010
+No_isr          000327 R  -2720  2520
+Op_adv_table    000413 R  -3350  3330
+Op_cnt          000526 R  -3780  3380  3410  3490  3620
+Op_curr         000524 R  -3760  3320  3520
+Op_table        000436 R  -3560  3540
+Op_terminate    000000     -240
+Op_to_exch      000525 R  -3770  2450  2600  3530  3600
+Op_wr_gap       000002     -260
+Op_wr_repeat    000003     -270
+Op_wr_words     000001     -250  3590
+Opt_track_b     000001     -210
+Par_data        000232 R  -2130  2230
+Par_error       000235 R  -2140  2770
+Par_options     000224 R  -2110  2170
+Par_threshold   000227 R  -2120  2200
+Prem_end        000325 R  -2700  2420
+Put_value          EXT     -180  2780
+R34             000034     -590   700
+R35             000035     -600   680   710   900   980  3180
+Save_r35        000041 R   -610   690   890   970
+Start1          000217 R  -2010  1990
+Start_op        000134 R  -1390  1730  1820
+Start_op0       000142 R  -1460  1420
+Start_op1       000144 R  -1490  1430
+Start_op2       000156 R  -1600  1440
+Start_wr        000201 R  -1870  2510
+State_start     000132 R  -1350  1870
+State_wr_gap    000176 R  -1800  1650
+State_wr_words  000165 R  -1690  1570
+State_ww_1      000172 R  -1740  1720
+T15             000017     -570  2490
+Taco_clear      034000     -470  1110
+Taco_force_irq  015000     -510  2020
+Taco_forward    100000     -480   490   500
+Taco_mod        000100     -450   460
+Taco_precomp    060000     -540  1500
+Taco_set_track  014000     -440  1970
+
+
+
+                                                PAGE 9
+MODULE:  Clon25
+
+Taco_stop       010000     -430   950
+Taco_track_b    000100     -460  2000
+Taco_wr_9825    107000     -490  1560
+Taco_wr_gap     154000     -500  1640
+Tmp1            000101 R  -1020  1040  1080
+Val_options     000447 R  -3660  1980  2160
+Val_threshold   000450 R  -3670  1490  2190
+Wait1           000104 R  -1060  1070
+Wait2           000106 R  -1080  1060
+Wait_flg        000102 R  -1040   860  1120  1510  1540  1620  1750

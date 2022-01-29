@@ -1,0 +1,845 @@
+                                                PAGE 1
+MODULE:  Dump25
+
+110                ! **** DUMP9825 ****
+120                ! Copyright (c) 2022 F.Ulivi
+130                !
+140                ! Licensed under the 3-Clause BSD License
+150                !
+160                ! Any resemblance to test ROM code is purely coincidental ;)
+170                !
+180                         EXT Isr_access,Get_value,Get_info,Put_value
+190                         EXT Put_elem_bytes,Printer_select,Print_no_lf
+200                !
+210                ! Bits in option bitmap
+220         000001 Opt_track_b:EQU 1
+230         000002 Opt_hi_thr_rd:EQU 2
+240         000004 Opt_hi_thr_gap:EQU 4
+250         000010 Opt_no_display:EQU 8
+260                !
+270                ! Offset for indirect jumps @ISR level
+280         100000 Indirect_off:EQU 100000B
+290                !
+300                ! TACO Commands
+310         010000 Taco_stop:EQU 10000B
+320         014000 Taco_set_track:EQU 14000B
+330         000100 Taco_mod:EQU 100B
+340         000100 Taco_track_b:EQU Taco_mod
+350         034000 Taco_clear:EQU 34000B
+360         100000 Taco_forward:EQU 100000B
+370         173000 Taco_rd_9825:EQU 73000B+Taco_forward
+380         177000 Taco_csum_9825:EQU 77000B+Taco_forward
+390         174000 Taco_int_n_tach:EQU 74000B+Taco_forward
+400         100000 Taco_int_gap:EQU 0B+Taco_forward
+410         164000 Taco_int_n_22:EQU 64000B+Taco_forward
+420                !
+430         177770 Tach_skip_post:EQU -8    ! Tach ticks to skip postamble (8)
+440         177760 Tach_skip_gap:EQU -16    ! Tach ticks for 1" gap searching (1
+6)
+450         000031 Gap_1in_cnt:EQU 25       ! Count of Tach_skip_gap in 1" of ta
+pe
+460                !
+470                ! T15 PA
+480         000017 T15:     EQU 15
+490                !
+500         000034 R34:     EQU 34B
+510         000035 R35:     EQU 35B
+520   00041        Save_r35:BSS 1
+530   00042        Isr_jump:BSS 1
+540   00043        Err_code:BSS 1
+550   00044        Exp_rec_no:BSS 1         ! Expected rec. number
+560   00045        Rec_header:BSS 7         ! Record header
+570         000045 Rec_no:  EQU Rec_header  ! Record number
+580         000046 Rec_asize:EQU Rec_header+1! Absolute size
+590         000047 Rec_csize:EQU Rec_header+2! Current size
+600         000050 Rec_rtype:EQU Rec_header+3! Record type
+610         000051 Rec_rewrite_no:EQU Rec_header+4! Rewrite number
+620         000054 Rec_header_end:EQU *
+630   00054        Hdr_ptr: BSS 1           ! Pointer to header
+640   00055        Exp_part_no:BSS 1        ! Expected partition number
+650   00056        Part_header:BSS 3        ! Partition header
+660         000056 Part_no: EQU Part_header ! Partition number
+670         000057 Part_size:EQU Part_header+1! Partition size
+680         000060 Part_rewrite_no:EQU Part_header+2! Rewrite number
+
+
+
+                                                PAGE 2
+MODULE:  Dump25
+
+690         000061 Part_header_end:EQU *
+700   00061        Gap_cnt: BSS 1
+710   00062        Taco_mod_rd:BSS 1
+720   00063        Taco_mod_gap:BSS 1
+730   00064        Good_recs:BSS 1
+740                !
+750                ! ************
+760                ! * TACO ISR *
+770                ! ************
+780   00065 000035 Dump_isr:LDA R35
+790   00066 033753          STA Save_r35
+800   00067 000034          LDA R34
+810   00070 030035          STA R35
+820   00071 003752          LDA Err_code
+830   00072 072010          RZA Err_n_end   ! Abort if errors
+840   00073 167747          JMP Isr_jump,I
+850   00074 042017 Cmd_n_set_int:JSM Wait_flg
+860   00075 030005          STA R5
+870   00076 037744 Set_next_int:STB Isr_jump
+880   00077 003742 Leave_isr:LDA Save_r35
+890   00100 030035          STA R35
+900   00101 170201          RET 1
+910                !
+920                ! Error codes
+930         000000 Err_none:EQU 0           ! No error
+940         000001 Err_evd: EQU 1           ! EVD reached
+950         000002 Err_null_rec:EQU 2       ! Null record reached
+960         000003 Err_stopped:EQU 3        ! Stopped by user
+970         000005 Err_oom: EQU 5           ! No space left in output string
+980         000006 Err_ovf: EQU 6           ! Exchange buffer overflow
+990         000007 Err_par: EQU 7           ! Bad parameters
+1000        000010 Err_no_isr:EQU 8          ! Couldn't acquire ISR
+1010        000012 Err_state0:EQU 10         ! Error in state 0
+1020               !
+1030  00102 033741 Err_n_end:STA Err_code
+1040  00103 042016           JSM Clear_taco
+1050  00104 002752           LDA =Taco_stop
+1060  00105 042015           JSM Cmd_taco
+1070  00106 003733           LDA Save_r35
+1080  00107 030035           STA R35
+1090  00110 141514           JSM End_isr_high,I
+1100  00111 170201           RET 1
+1110               !
+1120  00112        Tmp1:     BSS 1
+1130               !
+1140  00113 033777 Wait_flg: STA Tmp1
+1150  00114 002743           LDA =65511
+1160  00115 072202 Wait1:    SFS Wait2
+1170  00116 072177           RIA Wait1
+1180  00117 003773 Wait2:    LDA Tmp1
+1190  00120 170201           RET 1
+1200               !
+1210  00121 002737 Clear_taco:LDA =Taco_clear
+1220  00122 043771 Cmd_taco: JSM Wait_flg
+1230  00123 030005           STA R5
+1240  00124 170201           RET 1
+1250               !
+1260               ! Put regA into exchange buffer
+1270               ! RET 1: overflow
+1280               ! RET 2: OK
+
+
+
+                                                PAGE 3
+MODULE:  Dump25
+
+1290  00125        Exch_buffer:BSS 2
+1300  00127        Exch_cnt: BSS 1
+1310               !
+1320  00130 007777 Put_exchange:LDB Exch_cnt
+1330  00131 016730           CPB =2
+1340  00132 066007           JMP Put2        ! Buffer overflow
+1350  00133 047774           ISZ Exch_cnt    ! 1 more word in buffer
+1360  00134 076403           SZB Put1
+1370  00135 033771           STA Exch_buffer+1       ! Put 2nd word
+1380  00136 170202           RET 2
+1390  00137 033766 Put1:     STA Exch_buffer ! Put 1st word
+1400  00140 170202           RET 2
+1410  00141 002721 Put2:     LDA =Err_ovf
+1420  00142 170201           RET 1
+1430               !
+1440               ! Start reading
+1450               ! RET 1: failure
+1460               ! RET 2: OK
+1470  00143 002720 Start_rd: LDA =State12+Indirect_off
+1480  00144 033676           STA Isr_jump
+1490  00145 170517           CLA 
+1500  00146 033761           STA Exch_cnt
+1510  00147 033675           STA Exp_rec_no
+1520  00150 033714           STA Good_recs
+1530  00151 032703           STA Chase_rec_no
+1540  00152 032703           STA Chase_good_recs
+1550  00153 000011           LDA Pa
+1560  00154 052710           AND =15
+1570  00155 022710           ADA =256+(3*16) ! 1 attempt, synch. access
+1580  00156 030001           STA B
+1590  00157 002707           LDA =Dump_isr
+1600  00160 142707           JSM Isr_access
+1610  00161 170201           RET 1           ! Failed
+1620  00162 043737           JSM Clear_taco
+1630  00163 002705           LDA =Taco_set_track
+1640  00164 006605           LDB Val_options
+1650  00165 077002           SLB Start1
+1660  00166 062703           IOR =Taco_track_b
+1670  00167 043733 Start1:   JSM Cmd_taco    ! Set track A/B
+1680  00170 170517           CLA 
+1690  00171 174500           SBR 1
+1700  00172 077002           SLB Start2
+1710  00173 002676           LDA =Taco_mod
+1720  00174 033666 Start2:   STA Taco_mod_rd
+1730  00175 170517           CLA 
+1740  00176 174500           SBR 1
+1750  00177 077002           SLB Start3
+1760  00200 002671           LDA =Taco_mod
+1770  00201 033662 Start3:   STA Taco_mod_gap
+1780  00202 002670           LDA =Gap_1in_cnt
+1790  00203 033656           STA Gap_cnt             ! Start 1" gap search
+1800  00204 002667           LDA =Tach_skip_gap
+1810  00205 043706           JSM Wait_flg
+1820  00206 030006           STA R6
+1830  00207 002665           LDA =Taco_int_n_22
+1840  00210 063653           IOR Taco_mod_gap
+1850  00211 043711           JSM Cmd_taco    ! Off we go!
+1860  00212 170202           RET 2
+1870               !
+1880               ! State 3: Read 1st word of rec header
+
+
+
+                                                PAGE 4
+MODULE:  Dump25
+
+1890  00213 000005 State3:   LDA R5          ! Check for hole
+1900  00214 073006           SLA State3_2
+1910  00215 002660           LDA =(30+0)*256
+1920  00216 043712           JSM Put_exchange
+1930  00217 067663           JMP Err_n_end
+1940  00220 043701           JSM Clear_taco  ! Hole reached, restart gap search
+1950  00221 066066           JMP State_to_12
+1960  00222 076203 State3_2: SSS State3_1
+1970  00223 002653 Evd_reached:LDA =Err_evd
+1980  00224 067656           JMP Err_n_end   ! STS=0, EVD reached
+1990  00225 000004 State3_1: LDA R4
+2000  00226 043702           JSM Put_exchange
+2010  00227 067653           JMP Err_n_end
+2020  00230 033615           STA Rec_header
+2030  00231 002646           LDA =Rec_header+1
+2040  00232 033622           STA Hdr_ptr
+2050  00233 006645           LDB =State4+Indirect_off
+2060  00234 067642           JMP Set_next_int
+2070               !
+2080               ! State 4: Read rec header
+2090  00235 000004 State4:   LDA R4
+2100  00236 133616           STA Hdr_ptr,I
+2110  00237 043671           JSM Put_exchange
+2120  00240 067642           JMP Err_n_end
+2130  00241 047613           ISZ Hdr_ptr
+2140  00242 003612           LDA Hdr_ptr
+2150  00243 012636           CPA =Rec_header_end
+2160  00244 066002           JMP State4_to_5
+2170  00245 067632           JMP Leave_isr
+2180  00246 002634 State4_to_5:LDA =Taco_csum_9825
+2190  00247 063613           IOR Taco_mod_rd
+2200  00250 006633           LDB =State5+Indirect_off
+2210  00251 067623           JMP Cmd_n_set_int
+2220               !
+2230               ! State 5: Read rec header csum
+2240  00252 000004 State5:   LDA R4
+2250  00253 043655           JSM Put_exchange
+2260  00254 067626           JMP Err_n_end
+2270  00255 010007           CPA R7
+2280  00256 066002           JMP State5_1
+2290  00257 066027           JMP Next_rec            ! Header csum not matching,
+ skip record
+2300               ! TODO: Checks on rec header
+2310  00260 003566 State5_1: LDA Rec_asize
+2320  00261 063566           IOR Rec_csize
+2330  00262 063566           IOR Rec_rtype
+2340  00263 072004           RZA State5_2
+2350  00264 047600           ISZ Good_recs
+2360  00265 002574           LDA =Err_null_rec       ! Track terminated by null 
+rec
+2370  00266 067614           JMP Err_n_end
+2380  00267 003556 State5_2: LDA Rec_no
+2390  00270 013554           CPA Exp_rec_no
+2400  00271 066002           JMP State5_3
+2410  00272 066014           JMP Next_rec
+2420  00273 003554 State5_3: LDA Rec_csize
+2430  00274 072411           SZA Good_rec_ends       ! 0-sized record
+2440  00275 170517           CLA 
+2450  00276 033557           STA Exp_part_no
+2460  00277 002605 State_to_6:LDA =Tach_skip_post
+
+
+
+                                                PAGE 5
+MODULE:  Dump25
+
+2470  00300 043613           JSM Wait_flg
+2480  00301 030006           STA R6
+2490  00302 002603           LDA =Taco_int_n_tach
+2500  00303 006603           LDB =State6+Indirect_off
+2510  00304 067570           JMP Cmd_n_set_int
+2520  00305 047557 Good_rec_ends:ISZ Good_recs
+2530  00306 047536 Next_rec: ISZ Exp_rec_no
+2540  00307 002563 State_to_12:LDA =Gap_1in_cnt
+2550  00310 033551           STA Gap_cnt             ! Start 1" gap search
+2560  00311 002576           LDA =Taco_int_gap
+2570  00312 063551           IOR Taco_mod_gap
+2580  00313 006550           LDB =State12+Indirect_off
+2590  00314 067560           JMP Cmd_n_set_int
+2600               !
+2610               ! State 6: Skip record header postamble
+2620  00315 002573 State6:   LDA =Part_header
+2630  00316 033536           STA Hdr_ptr
+2640  00317 000007 State6_1: LDA R7          ! Clear csum
+2650  00320 002571           LDA =Taco_rd_9825       ! Start part. reading
+2660  00321 063541           IOR Taco_mod_rd
+2670  00322 006570           LDB =State7+Indirect_off
+2680  00323 067551           JMP Cmd_n_set_int
+2690               !
+2700               ! State 7: Read partition header
+2710  00324 000004 State7:   LDA R4
+2720  00325 004005           LDB R5
+2730  00326 174703           RBR 4
+2740  00327 077003           SLB State7_2
+2750  00330 043571           JSM Clear_taco  ! Got a gap, clear & restart
+2760  00331 067766           JMP State6_1
+2770  00332 076202 State7_2: SSS State7_1
+2780  00333 067670           JMP Evd_reached
+2790  00334 133520 State7_1: STA Hdr_ptr,I
+2800  00335 043573           JSM Put_exchange
+2810  00336 067544           JMP Err_n_end
+2820  00337 047515           ISZ Hdr_ptr
+2830  00340 003514           LDA Hdr_ptr
+2840  00341 012552           CPA =Part_header_end
+2850  00342 066002           JMP State7_to_8
+2860  00343 067534           JMP Leave_isr
+2870  00344 002536 State7_to_8:LDA =Taco_csum_9825
+2880  00345 063515           IOR Taco_mod_rd
+2890  00346 006546           LDB =State8+Indirect_off
+2900  00347 067525           JMP Cmd_n_set_int
+2910               !
+2920               ! State8: Read part header csum
+2930  00350 000004 State8:   LDA R4
+2940  00351 043557           JSM Put_exchange
+2950  00352 067530           JMP Err_n_end
+2960  00353 010007           CPA R7
+2970  00354 066002           JMP State8_1
+2980  00355 067731           JMP Next_rec
+2990  00356 003500 State8_1: LDA Part_no
+3000  00357 013476           CPA Exp_part_no ! Check for matching part no
+3010  00360 066002           JMP State8_2
+3020  00361 067725 State8_3: JMP Next_rec
+3030  00362 003476 State8_2: LDA Part_rewrite_no
+3040  00363 013466           CPA Rec_rewrite_no
+3050  00364 066002           JMP State8_4    ! Check for rewrite #
+3060  00365 067721           JMP Next_rec
+
+
+
+                                                PAGE 6
+MODULE:  Dump25
+
+3070  00366 003471 State8_4: LDA Part_size
+3080  00367 072472           SZA State8_3    ! Size = 0 is invalid
+3090  00370 170040           TCA 
+3100  00371 023456           ADA Rec_csize
+3110  00372 172467           SAM State8_3    ! Size should be <= residual rec cs
+ize
+3120  00373 033454           STA Rec_csize   ! Update count of words to be read
+3130  00374 006521           LDB =State9+Indirect_off
+3140  00375 067501           JMP Set_next_int
+3150               !
+3160               ! State 9: Read and discard preamble word
+3170  00376 000004 State9:   LDA R4          ! We trust it to be 1
+3180  00377 000007           LDA R7          ! Clear csum
+3190  00400 002511           LDA =Taco_rd_9825       ! Start reading data from p
+artition
+3200  00401 063461           IOR Taco_mod_rd
+3210  00402 006514           LDB =State10+Indirect_off
+3220  00403 067471           JMP Cmd_n_set_int
+3230               !
+3240               ! State 10: Read partition data
+3250  00404 076203 State10:  SSS State10_1
+3260  00405 002512           LDA =Err_state0+10
+3270  00406 067474           JMP Err_n_end
+3280  00407 000004 State10_1:LDA R4
+3290  00410 043520           JSM Put_exchange
+3300  00411 067471           JMP Err_n_end
+3310  00412 057445           DSZ Part_size
+3320  00413 067464           JMP Leave_isr
+3330  00414 002466           LDA =Taco_csum_9825
+3340  00415 063445           IOR Taco_mod_rd
+3350  00416 006502           LDB =State11+Indirect_off
+3360  00417 067455           JMP Cmd_n_set_int
+3370               !
+3380               ! State 11: Read part data csum
+3390  00420 000004 State11:  LDA R4
+3400  00421 043507           JSM Put_exchange
+3410  00422 067460           JMP Err_n_end
+3420  00423 010007           CPA R7
+3430  00424 066002           JMP State11_1
+3440  00425 067661           JMP Next_rec
+3450  00426 003421 State11_1:LDA Rec_csize
+3460  00427 072403           SZA State11_2
+3470  00430 047425           ISZ Exp_part_no ! More partitions to read
+3480  00431 067646           JMP State_to_6
+3490  00432 067653 State11_2:JMP Good_rec_ends       ! No more partitions, move 
+to next rec
+3500               !
+3510               ! State 12: Search for next 1" gap (IRG)
+3520  00433 000005 State12:  LDA R5          ! Check for hole
+3530  00434 073006           SLA State12_5
+3540  00435 002464           LDA =(120+0)*256
+3550  00436 043472           JSM Put_exchange
+3560  00437 067443           JMP Err_n_end
+3570  00440 043461           JSM Clear_taco  ! Hole reached, restart gap search
+3580  00441 067646           JMP State_to_12
+3590  00442 076203 State12_5:SSS State12_1
+3600  00443 002457           LDA =Err_state0+12
+3610  00444 067436           JMP Err_n_end
+3620  00445 000005 State12_1:LDA R5
+3630  00446 052455           AND =16         ! Get GAP bit
+
+
+
+                                                PAGE 7
+MODULE:  Dump25
+
+3640  00447 072417           SZA State12_2
+3650  00450 057411           DSZ Gap_cnt
+3660  00451 066022           JMP State12_3   ! More skipping to do
+3670               ! Done: 1" gap found, read next rec
+3680  00452 000007           LDA R7          ! Clear csum
+3690  00453 043446           JSM Clear_taco
+3700  00454 002316           LDA Val_threshold
+3710  00455 043436           JSM Wait_flg
+3720  00456 030007           STA R7          ! Set threshold
+3730  00457 002445           LDA =(120+3)*256
+3740  00460 043450           JSM Put_exchange
+3750  00461 067421           JMP Err_n_end
+3760  00462 002427           LDA =Taco_rd_9825
+3770  00463 063377           IOR Taco_mod_rd
+3780  00464 006441           LDB =State3+Indirect_off
+3790  00465 067407           JMP Cmd_n_set_int       ! Start rd
+3800  00466 002440 State12_2:LDA =(120+1)*256
+3810  00467 023372           ADA Gap_cnt
+3820  00470 043440           JSM Put_exchange
+3830  00471 067411           JMP Err_n_end
+3840  00472 067615           JMP State_to_12 ! Restart search if GAP=0
+3850               ! Skip forward 16 ticks at time when GAP=1 until 1" of gap is
+ reached
+3860  00473 002400 State12_3:LDA =Tach_skip_gap
+3870  00474 043417           JSM Wait_flg
+3880  00475 030006           STA R6
+3890  00476 002407           LDA =Taco_int_n_tach
+3900  00477 063364           IOR Taco_mod_gap
+3910  00500 006363           LDB =State12+Indirect_off
+3920  00501 067373           JMP Cmd_n_set_int
+3930               !
+3940               ! *******************************
+3950               ! * ICALL Entry point: Dump9825 *
+3960               ! *******************************
+3970               !
+3980                         SUB 
+3990  00503        Par_options:INT           ! Option bitmap
+4000  00506        Par_threshold:INT         ! Threshold
+4010  00511        Par_error:INT             ! Out: error code
+4020  00514        Par_last_rec:INT          ! Out: Last record number
+4030  00517        Par_good_rec:INT          ! Out: Good records
+4040  00522        Par_output:STR (*)        ! Out: dumped data
+4050               !
+4060  00525 002402 Dump9825: LDA =Val_options
+4070  00526 006402           LDB =Par_options
+4080  00527 142402           JSM Get_value
+4090  00530 002402           LDA =Val_threshold
+4100  00531 006402           LDB =Par_threshold
+4110  00532 142377           JSM Get_value
+4120  00533 002401           LDA =Output_info
+4130  00534 006401           LDB =Par_output
+4140  00535 142401           JSM Get_info
+4150  00536 002235           LDA Output_info
+4160  00537 012400           CPA =12         ! String array
+4170  00540 066002           JMP Dump1
+4180  00541 066106           JMP Bad_par
+4190  00542 002232 Dump1:    LDA Output_info+1
+4200  00543 012333           CPA =1
+4210  00544 066002           JMP Dump2
+4220  00545 066102           JMP Bad_par
+
+
+
+                                                PAGE 8
+MODULE:  Dump25
+
+4230  00546 002227 Dump2:    LDA Dim_size
+4240  00547 073002           SLA Dump9       ! Dimensioned size must be even
+4250  00550 066077           JMP Bad_par
+4260  00551 170517 Dump9:    CLA 
+4270  00552 032241           STA El_offset
+4280  00553 032267           STA Output_idx
+4290  00554 033267           STA Err_code
+4300  00555 002214           LDA Val_options
+4310  00556 062362           IOR =(250+0)*256
+4320  00557 042134           JSM Put_output  ! Store options as trace entry
+4330  00560 002361           LDA =17         ! Select DISP area for output
+4340  00561 006361           LDB =80
+4350  00562 142361           JSM Printer_select
+4360  00563 032267           STA Prev_select
+4370  00564 036267           STB Prev_width
+4380  00565 002204           LDA Val_options
+4390  00566 052356           AND =Opt_no_display
+4400  00567 072005           RZA Dump11
+4410  00570 002355           LDA ="00"
+4420  00571 032256           STA Msg_good
+4430  00572 032256           STA Msg_total   ! Clear good/total display
+4440  00573 042166           JSM Display
+4450  00574 002270 Dump11:   LDA =T15
+4460  00575 030011           STA Pa
+4470  00576 043345           JSM Start_rd
+4480  00577 066046           JMP No_isr
+4490               ! Main loop
+4500  00600 070430 Dump3:    DIR 
+4510  00601 003326           LDA Exch_cnt    ! A could be 0,1 or 2
+4520  00602 072415           SZA Dump4       ! A=0: no data in buffer
+4530  00603 057324           DSZ Exch_cnt    ! 1 less word in buffer
+4540  00604 066005           JMP Dump5       ! Skip if A=2
+4550  00605 003320           LDA Exch_buffer ! A=1: get 1st word
+4560  00606 070420           EIR 
+4570  00607 042104           JSM Put_output
+4580  00610 067770           JMP Dump3
+4590  00611 003314 Dump5:    LDA Exch_buffer ! A=2: get 1st word
+4600  00612 007314           LDB Exch_buffer+1
+4610  00613 037312           STB Exch_buffer ! Shift down 2nd word
+4620  00614 070420           EIR 
+4630  00615 042076           JSM Put_output
+4640  00616 067762           JMP Dump3
+4650  00617 003224 Dump4:    LDA Err_code
+4660  00620 070420           EIR 
+4670  00621 072027           RZA Exit_err
+4680  00622 002147           LDA Val_options
+4690  00623 052321           AND =Opt_no_display
+4700  00624 072054           RZA Dump3
+4710  00625 003217           LDA Exp_rec_no
+4720  00626 012226           CPA Chase_rec_no
+4730  00627 067751           JMP Dump3
+4740  00630 046224           ISZ Chase_rec_no
+4750  00631 002217           LDA Msg_total
+4760  00632 042105           JSM Twodigit_inc
+4770  00633 032215           STA Msg_total
+4780  00634 003230           LDA Good_recs
+4790  00635 012220           CPA Chase_good_recs
+4800  00636 066005           JMP Dump10
+4810  00637 046216           ISZ Chase_good_recs
+4820  00640 002207           LDA Msg_good
+
+
+
+                                                PAGE 9
+MODULE:  Dump25
+
+4830  00641 042076           JSM Twodigit_inc
+4840  00642 032205           STA Msg_good
+4850  00643 042116 Dump10:   JSM Display
+4860  00644 067734           JMP Dump3
+4870  00645 002277 No_isr:   LDA =Err_no_isr
+4880  00646 066002           JMP Exit_err
+4890  00647 002277 Bad_par:  LDA =Err_par
+4900  00650 033173 Exit_err: STA Err_code
+4910  00651 062276           IOR =(250+1)*256
+4920  00652 042041           JSM Put_output  ! Store error code
+4930  00653 002275           LDA =Err_code
+4940  00654 006275           LDB =Par_error
+4950  00655 142275           JSM Put_value
+4960  00656 002275           LDA =Exp_rec_no
+4970  00657 006275           LDB =Par_last_rec
+4980  00660 142272           JSM Put_value
+4990  00661 002274           LDA =Good_recs
+5000  00662 006274           LDB =Par_good_rec
+5010  00663 142267           JSM Put_value
+5020               ! Fix size of string array elements
+5030  00664 002156           LDA Output_idx
+5040  00665 032160           STA Output_word
+5050  00666 170517           CLA 
+5060  00667 032154           STA Output_byte
+5070  00670 002267           LDA =Output_byte
+5080  00671 006243           LDB =Output_info
+5090  00672 142266           JSM Put_elem_bytes
+5100  00673 002120 Fix_array:LDA El_offset
+5110  00674 072413           SZA Leave
+5120  00675 056116           DSZ El_offset
+5130  00676 000000           NOP 
+5140  00677 002076           LDA Dim_size
+5150  00700 032145           STA Output_word
+5160  00701 170517           CLA 
+5170  00702 032141           STA Output_byte
+5180  00703 002254           LDA =Output_byte
+5190  00704 006230           LDB =Output_info
+5200  00705 142253           JSM Put_elem_bytes
+5210  00706 067765           JMP Fix_array
+5220  00707 002143 Leave:    LDA Prev_select
+5230  00710 006143           LDB Prev_width
+5240  00711 142232           JSM Printer_select
+5250  00712 170201           RET 1
+5260               !
+5270               ! Store A in output array
+5280  00713 032132 Put_output:STA Output_word
+5290               ! Check for overflow
+5300  00714 002126           LDA Output_idx
+5310  00715 012060           CPA Dim_size
+5320  00716 066007           JMP Dump6               ! Array element exhausted
+5330  00717 022142 Dump8:    ADA =2
+5340  00720 032123           STA Output_byte
+5350  00721 032121           STA Output_idx
+5360  00722 002235           LDA =Output_byte
+5370  00723 006211           LDB =Output_info
+5380  00724 166234           JMP Put_elem_bytes      ! Write word into string ar
+ray
+5390  00725 002066 Dump6:    LDA El_offset
+5400  00726 022150           ADA =1
+5410  00727 012047           CPA El_count
+
+
+
+                                                PAGE 10
+MODULE:  Dump25
+
+5420  00730 066004           JMP Dump7               ! No space left in array
+5430  00731 032062           STA El_offset
+5440  00732 170517           CLA 
+5450  00733 067764           JMP Dump8
+5460  00734 002225 Dump7:    LDA =Err_oom
+5470  00735 033106           STA Err_code
+5480  00736 170201           RET 1
+5490               !
+5500  00737 022137 Twodigit_inc:ADA =1               ! Increment LS digit
+5510  00740 030001           STA B
+5520  00741 052221           AND =255
+5530  00742 012221           CPA ='9+1               ! Roll over from 9 to 0?
+5540  00743 066003           JMP Twodigit_1
+5550  00744 000001           LDA B
+5560  00745 170201           RET 1
+5570  00746 000001 Twodigit_1:LDA B                  ! Roll back LS digit from 9
+ to 0 and
+5580  00747 022215           ADA =246                ! increment MS digit
+5590  00750 030001           STA B
+5600  00751 052214           AND =177400B
+5610  00752 012214           CPA =('9+1)*256         ! MS digit went past 9?
+5620  00753 066003           JMP Twodigit_2
+5630  00754 000001           LDA B                   ! No, leave it alone
+5640  00755 170201           RET 1
+5650  00756 000001 Twodigit_2:LDA B                  ! Yes, bring it back to 0
+5660  00757 022132           ADA =173000B
+5670  00760 170201           RET 1
+5680               !
+5690  00761 002206 Display:  LDA =Message
+5700  00762 142206           JSM Print_no_lf
+5710  00763 000000           NOP 
+5720  00764 066002           JMP Display1            ! Overflow or STOP
+5730  00765 170201           RET 1                   ! Normal exit
+5740  00766 002203 Display1: LDA =Err_stopped
+5750  00767 033054           STA Err_code
+5760  00770 170201           RET 1
+5770               !
+5780  00771        Val_options:BSS 1
+5790  00772        Val_threshold:BSS 1
+5800  00773        Output_info:BSS 39
+5810        000775 Dim_size: EQU Output_info+2
+5820        000776 El_count: EQU Output_info+3
+5830        001013 El_offset:EQU Output_info+16
+5840  01042        Output_idx:BSS 1
+5850  01043        Output_byte:BSS 1
+5860  01044 000002 Output_size:DAT 2
+5870  01045        Output_word:BSS 1
+5880  01046 000005 Message:  DAT 5
+5890  01047        Msg_good: BSS 1
+5900  01050        Msg_total:BSS 1
+5910  01051 006400           DAT 13*256
+5920  01052        Prev_select:BSS 1
+5930  01053        Prev_width:BSS 1
+5940  01054        Chase_rec_no:BSS 1
+5950  01055        Chase_good_recs:BSS 1
+5960               !
+5970                         LIT 64
+5980               !
+5990                         END Dump25
+      01172
+
+
+
+                                                PAGE 11
+MODULE:  Dump25
+
+
+CROSS REFERENCE LISTING
+
+Bad_par         000647 R  -4890  4180  4220  4250
+Chase_good_recs 001055 R  -5950  1540  4790  4810
+Chase_rec_no    001054 R  -5940  1530  4720  4740
+Clear_taco      000121 R  -1210  1040  1620  1940  2750  3570  3690
+Cmd_n_set_int   000074 R   -850  2210  2510  2590  2680  2900  3220  3360  3790
+                                 3920
+Cmd_taco        000122 R  -1220  1060  1670  1850
+Dim_size        000775 R  -5810  4230  5140  5310
+Display         000761 R  -5690  4440  4850
+Display1        000766 R  -5740  5720
+Dump1           000542 R  -4190  4170
+Dump10          000643 R  -4850  4800
+Dump11          000574 R  -4450  4400
+Dump2           000546 R  -4230  4210
+Dump3           000600 R  -4500  4580  4640  4700  4730  4860
+Dump4           000617 R  -4650  4520
+Dump5           000611 R  -4590  4540
+Dump6           000725 R  -5390  5320
+Dump7           000734 R  -5460  5420
+Dump8           000717 R  -5330  5450
+Dump9           000551 R  -4260  4240
+Dump9825        000525 R  -4060
+Dump_isr        000065 R   -780  1590
+El_count        000776 R  -5820  5410
+El_offset       001013 R  -5830  4270  5100  5120  5390  5430
+Err_code        000043 R   -540   820  1030  4290  4650  4900  4930  5470  5750
+Err_evd         000001     -940  1970
+Err_n_end       000102 R  -1030   830  1930  1980  2010  2120  2260  2370  2810
+                                 2950  3270  3300  3410  3560  3610  3750  3830
+Err_no_isr      000010    -1000  4870
+Err_none        000000     -930
+Err_null_rec    000002     -950  2360
+Err_oom         000005     -970  5460
+Err_ovf         000006     -980  1410
+Err_par         000007     -990  4890
+Err_state0      000012    -1010  3260  3600
+Err_stopped     000003     -960  5740
+Evd_reached     000223 R  -1970  2780
+Exch_buffer     000125 R  -1290  1370  1390  4550  4590  4600  4610
+Exch_cnt        000127 R  -1300  1320  1350  1500  4510  4530
+Exit_err        000650 R  -4900  4670  4880
+Exp_part_no     000055 R   -640  2450  3000  3470
+Exp_rec_no      000044 R   -550  1510  2390  2530  4710  4960
+Fix_array       000673 R  -5100  5210
+Gap_1in_cnt     000031     -450  1780  2540
+Gap_cnt         000061 R   -700  1790  2550  3650  3810
+Get_info           EXT     -180  4140
+Get_value          EXT     -180  4080  4110
+Good_rec_ends   000305 R  -2520  2430  3490
+Good_recs       000064 R   -730  1520  2350  2520  4780  4990
+Hdr_ptr         000054 R   -630  2040  2100  2130  2140  2630  2790  2820  2830
+Indirect_off    100000     -280  1470  2050  2200  2500  2580  2670  2890  3130
+                                 3210  3350  3780  3910
+Isr_access         EXT     -180  1600
+Isr_jump        000042 R   -530   840   870  1480
+Leave           000707 R  -5220  5110
+Leave_isr       000077 R   -880  2170  2860  3320
+
+
+
+                                                PAGE 12
+MODULE:  Dump25
+
+Message         001046 R  -5880  5690
+Msg_good        001047 R  -5890  4420  4820  4840
+Msg_total       001050 R  -5900  4430  4750  4770
+Next_rec        000306 R  -2530  2290  2410  2980  3020  3060  3440
+No_isr          000645 R  -4870  4480
+Opt_hi_thr_gap  000004     -240
+Opt_hi_thr_rd   000002     -230
+Opt_no_display  000010     -250  4390  4690
+Opt_track_b     000001     -220
+Output_byte     001043 R  -5850  5060  5070  5170  5180  5340  5360
+Output_idx      001042 R  -5840  4280  5030  5300  5350
+Output_info     000773 R  -5800  4120  4150  4190  5080  5190  5370  5810  5820
+                                 5830
+Output_size     001044 R  -5860
+Output_word     001045 R  -5870  5040  5150  5280
+Par_error       000511 R  -4010  4940
+Par_good_rec    000517 R  -4030  5000
+Par_last_rec    000514 R  -4020  4970
+Par_options     000503 R  -3990  4070
+Par_output      000522 R  -4040  4130
+Par_threshold   000506 R  -4000  4100
+Part_header     000056 R   -650   660   670   680  2620
+Part_header_end 000061 R   -690  2840
+Part_no         000056 R   -660  2990
+Part_rewrite_no 000060 R   -680  3030
+Part_size       000057 R   -670  3070  3310
+Prev_select     001052 R  -5920  4360  5220
+Prev_width      001053 R  -5930  4370  5230
+Print_no_lf        EXT     -190  5700
+Printer_select     EXT     -190  4350  5240
+Put1            000137 R  -1390  1360
+Put2            000141 R  -1410  1340
+Put_elem_bytes     EXT     -190  5090  5200  5380
+Put_exchange    000130 R  -1320  1920  2000  2110  2250  2800  2940  3290  3400
+                                 3550  3740  3820
+Put_output      000713 R  -5280  4320  4570  4630  4920
+Put_value          EXT     -180  4950  4980  5010
+R34             000034     -500   800
+R35             000035     -510   780   810   890  1080
+Rec_asize       000046 R   -580  2310
+Rec_csize       000047 R   -590  2320  2420  3100  3120  3450
+Rec_header      000045 R   -560   570   580   590   600   610  2020  2030
+Rec_header_end  000054 R   -620  2150
+Rec_no          000045 R   -570  2380
+Rec_rewrite_no  000051 R   -610  3040
+Rec_rtype       000050 R   -600  2330
+Save_r35        000041 R   -520   790   880  1070
+Set_next_int    000076 R   -870  2060  3140
+Start1          000167 R  -1670  1650
+Start2          000174 R  -1720  1700
+Start3          000201 R  -1770  1750
+Start_rd        000143 R  -1470  4470
+State10         000404 R  -3250  3210
+State10_1       000407 R  -3280  3250
+State11         000420 R  -3390  3350
+State11_1       000426 R  -3450  3430
+State11_2       000432 R  -3490  3460
+State12         000433 R  -3520  1470  2580  3910
+State12_1       000445 R  -3620  3590
+State12_2       000466 R  -3800  3640
+
+
+
+                                                PAGE 13
+MODULE:  Dump25
+
+State12_3       000473 R  -3860  3660
+State12_5       000442 R  -3590  3530
+State3          000213 R  -1890  3780
+State3_1        000225 R  -1990  1960
+State3_2        000222 R  -1960  1900
+State4          000235 R  -2090  2050
+State4_to_5     000246 R  -2180  2160
+State5          000252 R  -2240  2200
+State5_1        000260 R  -2310  2280
+State5_2        000267 R  -2380  2340
+State5_3        000273 R  -2420  2400
+State6          000315 R  -2620  2500
+State6_1        000317 R  -2640  2760
+State7          000324 R  -2710  2670
+State7_1        000334 R  -2790  2770
+State7_2        000332 R  -2770  2740
+State7_to_8     000344 R  -2870  2850
+State8          000350 R  -2930  2890
+State8_1        000356 R  -2990  2970
+State8_2        000362 R  -3030  3010
+State8_3        000361 R  -3020  3080  3110
+State8_4        000366 R  -3070  3050
+State9          000376 R  -3170  3130
+State_to_12     000307 R  -2540  1950  3580  3840
+State_to_6      000277 R  -2460  3480
+T15             000017     -480  4450
+Tach_skip_gap   177760     -440  1800  3860
+Tach_skip_post  177770     -430  2460
+Taco_clear      034000     -350  1210
+Taco_csum_9825  177000     -380  2180  2870  3330
+Taco_forward    100000     -360   370   380   390   400   410
+Taco_int_gap    100000     -400  2560
+Taco_int_n_22   164000     -410  1830
+Taco_int_n_tach 174000     -390  2490  3890
+Taco_mod        000100     -330   340  1710  1760
+Taco_mod_gap    000063 R   -720  1770  1840  2570  3900
+Taco_mod_rd     000062 R   -710  1720  2190  2660  2880  3200  3340  3770
+Taco_rd_9825    173000     -370  2650  3190  3760
+Taco_set_track  014000     -320  1630
+Taco_stop       010000     -310  1050
+Taco_track_b    000100     -340  1660
+Tmp1            000112 R  -1120  1140  1180
+Twodigit_1      000746 R  -5570  5540
+Twodigit_2      000756 R  -5650  5620
+Twodigit_inc    000737 R  -5500  4760  4830
+Val_options     000771 R  -5780  1640  4060  4300  4380  4680
+Val_threshold   000772 R  -5790  3700  4090
+Wait1           000115 R  -1160  1170
+Wait2           000117 R  -1180  1160
+Wait_flg        000113 R  -1140   850  1220  1810  2470  3710  3870
